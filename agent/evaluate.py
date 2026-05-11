@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .board import Board
-from referee.game import Coord, PlayerColor
+from referee.game import Action, Coord, PlayerColor
 
 
 BOARD_SIZE = 8
@@ -70,6 +70,25 @@ def evaluate_placement(
         + W_PLACE_CORNER * corner
     )
     return float(total)
+
+
+def action_ev(board: Board, color: PlayerColor, action: Action) -> float:
+    """Estimate an action's immediate expected value without tree search."""
+    new_board = board.copy()
+    new_board.apply_action(color, action)
+    return float(evaluate(new_board, color) - evaluate(board, color))
+
+
+def rank_actions(
+    board: Board, color: PlayerColor, actions: list[Action]
+) -> list[tuple[float, Action]]:
+    """Return actions sorted by descending immediate EV."""
+    sorted_pairs = sorted(
+        [(action_ev(board, color, action), action) for action in actions],
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    return sorted_pairs
 
 
 def _token_advantage(

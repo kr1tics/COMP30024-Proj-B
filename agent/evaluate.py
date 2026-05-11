@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from .board import Board
-from referee.game import PlayerColor
+from referee.game import Coord, PlayerColor
 
 
 BOARD_SIZE = 8
+BOARD_CENTER = 3.5
 
 W_TOKEN = 10.0
 W_HEIGHT_ADV = 5.0
@@ -12,6 +13,11 @@ W_CASCADE = 8.0
 W_EAT = 6.0
 W_EDGE = -3.0
 W_CONSOL = 2.0
+
+W_PLACE_CENTRALITY = 4.0
+W_PLACE_SPREAD = 3.0
+W_PLACE_PROXIMITY = -2.0
+W_PLACE_CORNER = -3.0
 
 TERMINAL_WIN = 1e9
 
@@ -42,6 +48,26 @@ def evaluate(board: Board, color: PlayerColor) -> float:
         + W_EAT * eat
         + W_EDGE * edge
         + W_CONSOL * consol
+    )
+    return float(total)
+
+
+def evaluate_placement(
+    board: Board, color: PlayerColor, candidate_coord: Coord
+) -> float:
+    """Return a heuristic score for placing at candidate_coord."""
+    opponent = color.opponent
+
+    centrality = _placement_centrality(candidate_coord)
+    spread = _placement_spread(board, color, candidate_coord)
+    proximity = _placement_proximity_to_enemy(board, opponent, candidate_coord)
+    corner = _placement_corner_avoid(candidate_coord)
+
+    total = (
+        W_PLACE_CENTRALITY * centrality
+        + W_PLACE_SPREAD * spread
+        + W_PLACE_PROXIMITY * proximity
+        + W_PLACE_CORNER * corner
     )
     return float(total)
 
@@ -130,3 +156,48 @@ def _is_near_edge(coord) -> bool:
         or coord.c == 0
         or coord.c == BOARD_SIZE - 1
     )
+
+
+def _placement_centrality(coord: Coord) -> float:
+    return float(7.0 - _manhattan_distance_to_center(coord))
+
+
+def _placement_spread(board: Board, color: PlayerColor, coord: Coord) -> float:
+    own_stacks = board.get_stacks(color)
+    if not own_stacks:
+        return 4.0
+
+    min_dist = min(_manhattan_distance(coord, own_coord) for own_coord, _ in own_stacks)
+    return float(min(min_dist, 4))
+
+
+def _placement_proximity_to_enemy(
+    board: Board, opponent: PlayerColor, coord: Coord
+) -> float:
+    enemy_stacks = board.get_stacks(opponent)
+    if not enemy_stacks:
+        return 0.0
+
+    min_dist = min(
+        _manhattan_distance(coord, enemy_coord) for enemy_coord, _ in enemy_stacks
+    )
+    if min_dist < 2:
+        return float(2 - min(min_dist, 2))
+    return 0.0
+
+
+def _placement_corner_avoid(coord: Coord) -> float:
+    return -1.0 if _is_corner(coord) else 0.0
+
+
+def _manhattan_distance(coord_a, coord_b) -> float:
+    return abs(coord_a.r - coord_b.r) + abs(coord_a.c - coord_b.c)
+
+
+def _manhattan_distance_to_center(coord: Coord) -> float:
+    return abs(coord.r - BOARD_CENTER) + abs(coord.c - BOARD_CENTER)
+
+
+def _is_corner(coord: Coord) -> bool:
+    edge_values = {0, BOARD_SIZE - 1}
+    return coord.r in edge_values and coord.c in edge_values

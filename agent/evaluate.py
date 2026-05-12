@@ -1,11 +1,37 @@
 from __future__ import annotations
 
 from .board import Board
-from referee.game import Action, Coord, PlayerColor
+from referee.game import (
+    Action,
+    CascadeAction,
+    Coord,
+    Direction,
+    EatAction,
+    MoveAction,
+    PlaceAction,
+    PlayerColor,
+)
+
+
+def _in_bounds(coord: Coord) -> bool:
+    return 0 <= coord.r <= 7 and 0 <= coord.c <= 7
+
+
+def _step(coord: Coord, direction: Direction, steps: int = 1) -> Coord:
+    # Returns coord offset by `steps` in `direction`. May be out of bounds.
+    offsets = {
+        Direction.Up: (-1, 0),
+        Direction.Down: (1, 0),
+        Direction.Left: (0, -1),
+        Direction.Right: (0, 1),
+    }
+    dr, dc = offsets[direction]
+    return Coord(coord.r + dr * steps, coord.c + dc * steps)
 
 
 BOARD_SIZE = 8
 BOARD_CENTER = 3.5
+MAX_USEFUL_MERGE = 8
 
 W_TOKEN = 10.0
 W_HEIGHT_ADV = 5.0
@@ -89,6 +115,149 @@ def rank_actions(
         reverse=True,
     )
     return sorted_pairs
+
+
+def filter_actions(board: Board, color: PlayerColor, actions: list[Action]) -> list[Action]:
+    """
+    Domain-specific pruning. Call before rank_actions in the search move generator.
+    Never returns empty list -- falls back to highest EV action if all pruned.
+    """
+    filtered = []
+
+    for action in actions:
+        if isinstance(action, MoveAction):
+            if _prune_merge(board, color, action) and _move_has_purpose(
+                board, color, action
+            ):
+                filtered.append(action)
+        elif isinstance(action, EatAction):
+            if _eat_lands_safely(board, color, action):
+                filtered.append(action)
+        elif isinstance(action, CascadeAction):
+            if _cascade_has_value(board, color, action):
+                filtered.append(action)
+        elif isinstance(action, PlaceAction):
+            filtered.append(action)
+
+    if filtered:
+        return filtered
+    if not actions:
+        return []
+    return [rank_actions(board, color, actions)[0][1]]
+
+
+def _prune_merge(board: Board, color: PlayerColor, action: MoveAction) -> bool:
+    src_stack = _stack_at(board, action.coord)
+    dest = _next_coord(action.coord, action.direction)
+    if src_stack is None or dest is None:
+        return True
+
+    dest_stack = _stack_at(board, dest)
+    if dest_stack is None:
+        return True
+
+    src_color, src_height = src_stack
+    dest_color, dest_height = dest_stack
+    if src_color == color and dest_color == color:
+        return src_height + dest_height <= MAX_USEFUL_MERGE
+    return True
+
+
+def _cascade_has_value(
+    board: Board, color: PlayerColor, action: CascadeAction
+) -> bool:
+    src_stack = _stack_at(board, action.coord)
+    if src_stack is None:
+        return False
+
+    _, height = src_stack
+    for steps in range(1, height + 1):
+        target = _next_coord(action.coord, action.direction, steps)
+        if target is None:
+            continue
+
+        target_stack = _stack_at(board, target)
+        if target_stack is None:
+            continue
+
+        target_color, _ = target_stack
+        if target_color == color.opponent:
+            pushed_dest = _next_coord(target, action.direction)
+            if pushed_dest is None:
+                return True
+            return True
+
+    return False
+
+
+def _eat_lands_safely(board: Board, color: PlayerColor, action: EatAction) -> bool:
+    src_stack = _stack_at(board, action.coord)
+    dest = _next_coord(action.coord, action.direction)
+    if src_stack is None or dest is None:
+        return True
+
+    _, attacker_height = src_stack
+    if _is_near_edge(dest) and attacker_height >= 4:
+        return False
+    return True
+
+
+def _move_has_purpose(board: Board, color: PlayerColor, action: MoveAction) -> bool:
+    src_stack = _stack_at(board, action.coord)
+    dest = _next_coord(action.coord, action.direction)
+    if src_stack is None or dest is None:
+        return True
+
+    _, src_height = src_stack
+    if src_height != 1 or _stack_at(board, dest) is not None:
+        return True
+
+    for direction in (
+        Direction.Up,
+        Direction.Down,
+        Direction.Left,
+        Direction.Right,
+    ):
+        neighbor = _next_coord(dest, direction)
+        if neighbor is None:
+            continue
+
+        neighbor_stack = _stack_at(board, neighbor)
+        if neighbor_stack is not None and neighbor_stack[0] == color.opponent:
+            return True
+
+    return False
+
+
+def _next_coord(
+    coord: Coord, direction: Direction, steps: int = 1
+) -> Coord | None:
+    r = coord.r + direction.r * steps
+    c = coord.c + direction.c * steps
+    if not (0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE):
+        return None
+    return _step(coord, direction, steps)
+
+
+def _stack_at(board: Board, coord: Coord) -> tuple[PlayerColor, int] | None:
+    state = getattr(board, "_state", None)
+    if state is not None:
+        cell = state.get(coord)
+        if cell is None:
+            return None
+        if isinstance(cell, tuple):
+            return cell
+        if getattr(cell, "is_empty", False):
+            return None
+        return cell.color, cell.height
+
+    stacks = getattr(board, "_stacks", None)
+    if stacks is not None:
+        for stack_color, stack_coords in stacks.items():
+            if coord in stack_coords:
+                return stack_color, stack_coords[coord]
+
+    return None
 
 
 def _token_advantage(

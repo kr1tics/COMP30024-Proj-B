@@ -1,8 +1,13 @@
 # COMP30024 Artificial Intelligence, Semester 1 2026
 # Project Part B: Game Playing Agent
 
+from agent.board import Board
+from agent.evaluate import evaluate, evaluate_placement, rank_actions
 from referee.game import PlayerColor, Coord, Direction, \
     Action, PlaceAction, MoveAction, EatAction, CascadeAction
+
+
+BOARD_SIZE = 8
 
 
 class Agent:
@@ -16,6 +21,7 @@ class Agent:
         This constructor method runs when the referee instantiates the agent.
         Any setup and/or precomputation should be done here.
         """
+        self._board = Board()
         self._color = color
         self._turn_count = 0
         match color:
@@ -29,30 +35,16 @@ class Agent:
         This method is called by the referee each time it is the agent's turn
         to take an action. It must always return an action object.
         """
-
-        # Below we have hardcoded actions to be played depending on whether
-        # the agent is playing as BLUE or RED. Obviously this won't work beyond
-        # the initial moves of the game, so you should use some game playing
-        # technique(s) to determine the best action to take.
-
         # During placement phase (first 8 turns total, 4 per player)
         if self._turn_count < 4:
-            match self._color:
-                case PlayerColor.RED:
-                    print("Testing: RED is playing a PLACE action")
-                    return PlaceAction(Coord(0, self._turn_count))
-                case PlayerColor.BLUE:
-                    print("Testing: BLUE is playing a PLACE action")
-                    return PlaceAction(Coord(7, self._turn_count))
+            return self._best_placement_action()
 
         # During play phase
-        match self._color:
-            case PlayerColor.RED:
-                print("Testing: RED is playing a MOVE action")
-                return MoveAction(Coord(0, 0), Direction.Down)
-            case PlayerColor.BLUE:
-                print("Testing: BLUE is playing a MOVE action")
-                return MoveAction(Coord(7, 0), Direction.Up)
+        legal_actions = self._legal_actions()
+        if legal_actions:
+            return rank_actions(self._board, self._color, legal_actions)[0][1]
+
+        return MoveAction(Coord(0, 0), Direction.Down)
 
     def update(self, color: PlayerColor, action: Action, **referee: dict):
         """
@@ -62,10 +54,7 @@ class Agent:
         if color == self._color:
             self._turn_count += 1
 
-        # There are four possible action types: PLACE, MOVE, EAT, and CASCADE.
-        # Below we check which type of action was played and print out the
-        # details of the action for demonstration purposes. You should replace
-        # this with your own logic to update your agent's internal game state.
+        self._board.apply_action(color, action)
         match action:
             case PlaceAction(coord):
                 print(f"Testing: {color} played PLACE action at {coord}")
@@ -83,3 +72,58 @@ class Agent:
                 print(f"  Direction: {direction}")
             case _:
                 raise ValueError(f"Unknown action type: {action}")
+
+    def get_eval(self, board: Board) -> float:
+        return evaluate(board, self._color)
+
+    def _best_placement_action(self) -> PlaceAction:
+        candidates = self._valid_place_coords()
+        if not candidates:
+            return PlaceAction(Coord(0, 0))
+
+        best_coord = max(
+            candidates,
+            key=lambda coord: evaluate_placement(self._board, self._color, coord),
+        )
+        return PlaceAction(best_coord)
+
+    def _valid_place_coords(self) -> list[Coord]:
+        occupied = {
+            coord
+            for player_color in PlayerColor
+            for coord, _ in self._board.get_stacks(player_color)
+        }
+        enemy_coords = [
+            coord for coord, _ in self._board.get_stacks(self._color.opponent)
+        ]
+
+        candidates = []
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                coord = Coord(r, c)
+                if coord in occupied:
+                    continue
+                if enemy_coords and any(
+                    _is_adjacent(coord, enemy) for enemy in enemy_coords
+                ):
+                    continue
+                candidates.append(coord)
+
+        return candidates
+
+    def _legal_actions(self) -> list[Action]:
+        for method_name in ("get_legal_actions", "legal_actions", "actions"):
+            method = getattr(self._board, method_name, None)
+            if method is None:
+                continue
+
+            try:
+                return list(method(self._color))
+            except TypeError:
+                return list(method())
+
+        return []
+
+
+def _is_adjacent(coord_a: Coord, coord_b: Coord) -> bool:
+    return abs(coord_a.r - coord_b.r) + abs(coord_a.c - coord_b.c) == 1

@@ -1,15 +1,30 @@
+from referee.game import PlaceAction, PlayerColor
+
+
 class Board:
+    def __init__(self):
+        self._stacks = {
+            PlayerColor.RED: {},
+            PlayerColor.BLUE: {},
+        }
+
     def get_stacks(self, color):
-        return []
+        return list(self._stacks[color].items())
 
     def total_tokens(self, color):
-        return 0
+        return sum(self._stacks[color].values())
 
     def is_terminal(self):
         return False, None
 
     def copy(self):
-        return Board()
+        board = Board()
+        board._stacks = {
+            PlayerColor.RED: dict(self._stacks[PlayerColor.RED]),
+            PlayerColor.BLUE: dict(self._stacks[PlayerColor.BLUE]),
+        }
+        return board
 
     def apply_action(self, color, action):
-        pass
+        if isinstance(action, PlaceAction):
+            self._stacks[color][action.coord] = 1

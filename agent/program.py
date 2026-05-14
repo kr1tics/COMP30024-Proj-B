@@ -1,8 +1,101 @@
 # COMP30024 Artificial Intelligence, Semester 1 2026
 # Project Part B: Game Playing Agent
 
-from referee.game import PlayerColor, Coord, Direction, \
+import math
+
+from agent.board import Board
+from agent.evaluate import evaluate, evaluate_placement
+from referee.game import PlayerColor, Coord, Direction, CARDINAL_DIRECTIONS, \
     Action, PlaceAction, MoveAction, EatAction, CascadeAction
+from referee.game import Board as SearchBoard
+
+
+BOARD_SIZE = 8
+
+
+def get_all_actions(board: SearchBoard, color: PlayerColor) -> list[Action]:
+    """Return all legal actions for color on the given referee Board."""
+    actions = []
+    opponent = color.opponent
+
+    for coord, cell in board._state.items():
+        if cell.color != color:
+            continue
+
+        for direction in CARDINAL_DIRECTIONS:
+            try:
+                dest = coord + direction
+            except ValueError:
+                continue  # off board
+
+            dest_cell = board._state[dest]
+
+            if dest_cell.is_empty or dest_cell.color == color:
+                actions.append(MoveAction(coord, direction))
+            elif dest_cell.color == opponent and cell.height >= dest_cell.height:
+                actions.append(EatAction(coord, direction))
+
+        if cell.height >= 2:
+            for direction in CARDINAL_DIRECTIONS:
+                actions.append(CascadeAction(coord, direction))
+
+    return actions
+
+
+def find_best_action(
+    board: SearchBoard, color: PlayerColor, depth: int = 3
+) -> Action | None:
+    best_action = None
+    best_score = -math.inf
+
+    for action in get_all_actions(board, color):
+        board.apply_action(action)
+        score = alphabeta(board, depth - 1, -math.inf, math.inf, False, color)
+        board.undo_action()
+
+        if score > best_score:
+            best_score = score
+            best_action = action
+
+    return best_action
+
+
+def alphabeta(
+    board: SearchBoard,
+    depth: int,
+    alpha: float,
+    beta: float,
+    maximising: bool,
+    color: PlayerColor,
+) -> float:
+    if depth == 0 or board.game_over:
+        return evaluate(board, color)
+
+    actions = get_all_actions(board, board._turn_color)
+
+    if not actions:
+        return evaluate(board, color)
+
+    if maximising:
+        value = -math.inf
+        for action in actions:
+            board.apply_action(action)
+            value = max(value, alphabeta(board, depth - 1, alpha, beta, False, color))
+            board.undo_action()
+            alpha = max(alpha, value)
+            if value >= beta:
+                break
+        return value
+    else:
+        value = math.inf
+        for action in actions:
+            board.apply_action(action)
+            value = min(value, alphabeta(board, depth - 1, alpha, beta, True, color))
+            board.undo_action()
+            beta = min(beta, value)
+            if value <= alpha:
+                break
+        return value
 
 
 class Agent:
@@ -16,6 +109,8 @@ class Agent:
         This constructor method runs when the referee instantiates the agent.
         Any setup and/or precomputation should be done here.
         """
+        self._board = Board()
+        self._search_board = SearchBoard()
         self._color = color
         self._turn_count = 0
         match color:
@@ -29,30 +124,14 @@ class Agent:
         This method is called by the referee each time it is the agent's turn
         to take an action. It must always return an action object.
         """
-
-        # Below we have hardcoded actions to be played depending on whether
-        # the agent is playing as BLUE or RED. Obviously this won't work beyond
-        # the initial moves of the game, so you should use some game playing
-        # technique(s) to determine the best action to take.
-
-        # During placement phase (first 8 turns total, 4 per player)
         if self._turn_count < 4:
-            match self._color:
-                case PlayerColor.RED:
-                    print("Testing: RED is playing a PLACE action")
-                    return PlaceAction(Coord(0, self._turn_count))
-                case PlayerColor.BLUE:
-                    print("Testing: BLUE is playing a PLACE action")
-                    return PlaceAction(Coord(7, self._turn_count))
+            return self._best_placement_action()
 
-        # During play phase
-        match self._color:
-            case PlayerColor.RED:
-                print("Testing: RED is playing a MOVE action")
-                return MoveAction(Coord(0, 0), Direction.Down)
-            case PlayerColor.BLUE:
-                print("Testing: BLUE is playing a MOVE action")
-                return MoveAction(Coord(7, 0), Direction.Up)
+        action = find_best_action(self._search_board, self._color)
+        if action is not None:
+            return action
+
+        return MoveAction(Coord(0, 0), Direction.Down)
 
     def update(self, color: PlayerColor, action: Action, **referee: dict):
         """
@@ -62,10 +141,9 @@ class Agent:
         if color == self._color:
             self._turn_count += 1
 
-        # There are four possible action types: PLACE, MOVE, EAT, and CASCADE.
-        # Below we check which type of action was played and print out the
-        # details of the action for demonstration purposes. You should replace
-        # this with your own logic to update your agent's internal game state.
+        self._board.apply_action(color, action)
+        self._search_board.apply_action(action)
+
         match action:
             case PlaceAction(coord):
                 print(f"Testing: {color} played PLACE action at {coord}")
@@ -83,3 +161,47 @@ class Agent:
                 print(f"  Direction: {direction}")
             case _:
                 raise ValueError(f"Unknown action type: {action}")
+
+    def get_eval(self, board: Board) -> float:
+        return evaluate(board, self._color)
+
+    def _best_placement_action(self) -> PlaceAction:
+        candidates = self._valid_place_coords()
+        if not candidates:
+            return PlaceAction(Coord(0, 0))
+
+        best_coord = max(
+            candidates,
+            key=lambda coord: evaluate_placement(
+                self._search_board, self._color, coord
+            ),
+        )
+        return PlaceAction(best_coord)
+
+    def _valid_place_coords(self) -> list[Coord]:
+        occupied = {
+            coord for coord, cell in self._search_board._state.items()
+            if cell.is_stack
+        }
+        enemy_coords = [
+            coord for coord, cell in self._search_board._state.items()
+            if cell.color == self._color.opponent
+        ]
+
+        candidates = []
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                coord = Coord(r, c)
+                if coord in occupied:
+                    continue
+                if enemy_coords and any(
+                    _is_adjacent(coord, enemy) for enemy in enemy_coords
+                ):
+                    continue
+                candidates.append(coord)
+
+        return candidates
+
+
+def _is_adjacent(coord_a: Coord, coord_b: Coord) -> bool:
+    return abs(coord_a.r - coord_b.r) + abs(coord_a.c - coord_b.c) == 1

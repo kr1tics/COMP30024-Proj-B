@@ -1,4 +1,4 @@
-Pfrom __future__ import annotations
+from __future__ import annotations
 
 from .board import Board
 from referee.game import (

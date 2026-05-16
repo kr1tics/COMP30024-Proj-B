@@ -426,7 +426,37 @@ def _cascade_merges_friendly_stack(
         return False
 
     target = board._state[dest]
-    return target.color == color
+    if target.color != color:
+        return False
+
+    exposed_before = _height_one_exposure_count(board, color)
+    board.apply_action(action)
+    try:
+        exposed_after = _height_one_exposure_count(board, color)
+    finally:
+        board.undo_action()
+
+    return exposed_after <= exposed_before
+
+
+def _height_one_exposure_count(board: SearchBoard, color: PlayerColor) -> int:
+    count = 0
+
+    for coord, cell in board._state.items():
+        if cell.color != color:
+            continue
+
+        for direction in CARDINAL_DIRECTIONS:
+            dest = _destination(coord, direction)
+            if dest is None:
+                continue
+
+            target = board._state[dest]
+            if target.color == color.opponent and target.height == 1:
+                count += 1
+                break
+
+    return count
 
 
 def _reverses_previous_move(

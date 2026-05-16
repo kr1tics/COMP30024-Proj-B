@@ -436,7 +436,7 @@ def _cascade_merges_friendly_stack(
     finally:
         board.undo_action()
 
-    return exposed_after <= exposed_before
+    return exposed_after <= exposed_before + 1
 
 
 def _height_one_exposure_count(board: SearchBoard, color: PlayerColor) -> int:

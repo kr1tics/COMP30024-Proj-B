@@ -70,6 +70,7 @@ W_HIGH_EDGE = -4.0
 W_HIGH_CORNER = -10.0
 W_MOBILITY = 1.5
 W_EAT_CLUSTER = 8.0
+W_EAT_ADJACENCY_DANGER = -250.0
 
 W_PLACE_CENTRALITY = 4.0
 W_PLACE_SPREAD = 3.0
@@ -102,6 +103,7 @@ def evaluate(board: Board, color: PlayerColor) -> float:
     high_edge, high_corner = _high_stack_edge_corner_penalty(board, color)
     mobility = _mobility_score(board, color) - _mobility_score(board, opponent)
     eat_cluster = _eat_cluster_score(board, color) - _eat_cluster_score(board, opponent)
+    eat_adjacency_danger = _eat_adjacency_danger(board, color)
 
     total = (
         W_TOKEN * token_adv
@@ -116,6 +118,7 @@ def evaluate(board: Board, color: PlayerColor) -> float:
         + W_HIGH_CORNER * high_corner
         + W_MOBILITY * mobility
         + W_EAT_CLUSTER * eat_cluster
+        + W_EAT_ADJACENCY_DANGER * eat_adjacency_danger
     )
 
     opponent_tokens = _total_tokens(board, opponent)
@@ -447,6 +450,27 @@ def _legal_eat_count(board: Board, color: PlayerColor) -> int:
                 and height >= target[1]
             ):
                 count += 1
+
+    return count
+
+
+def _eat_adjacency_danger(board: Board, color: PlayerColor) -> int:
+    count = 0
+
+    for coord, _ in _get_stacks(board, color):
+        for direction in CARDINAL_DIRECTIONS:
+            dest = _next_coord(coord, direction)
+            if dest is None:
+                continue
+
+            target = _stack_at(board, dest)
+            if (
+                target is not None
+                and target[0] == color.opponent
+                and target[1] == 1
+            ):
+                count += 1
+                break
 
     return count
 

@@ -106,19 +106,23 @@ def find_best_action(
                         color,
                         deadline,
                     )
-                    repeated_position = False
+                    position_visits = 0
                     if position_history:
                         board_hash = frozenset(
                             (coord, cell.color, cell.height)
                             for coord, cell in board._state.items()
                             if not cell.is_empty
                         )
-                        repeated_position = board_hash in position_history
+                        position_visits = position_history.count(board_hash)
                 finally:
                     board.undo_action()
                 score += root_adjustment
-                if position_history and repeated_position:
-                    score -= 200.0
+                if position_visits == 1:
+                    score -= 80.0
+                elif position_visits == 2:
+                    score -= 160.0
+                elif position_visits >= 3:
+                    score -= 240.0
 
                 if score > depth_score:
                     depth_score = score
@@ -580,7 +584,7 @@ class Agent:
             if not cell.is_empty
         )
         self._position_history.append(board_hash)
-        self._position_history = self._position_history[-6:]
+        self._position_history = self._position_history[-10:]
 
         match action:
             case PlaceAction(coord):

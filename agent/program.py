@@ -118,7 +118,7 @@ def find_best_action(
                     board.undo_action()
                 score += root_adjustment
                 if position_history and repeated_position:
-                    score -= 500.0
+                    score -= 150.0
 
                 if score > depth_score:
                     depth_score = score
@@ -339,6 +339,8 @@ def _root_action_adjustment(
         board, action, recent_own_actions
     ):
         adjustment -= 15.0
+        if _recreates_two_ply_cycle(action, recent_own_actions):
+            adjustment -= 30.0
 
     if isinstance(action, CascadeAction) and _is_bad_non_capture_cascade(
         board, color, action
@@ -365,6 +367,8 @@ def _is_bad_non_capture_cascade(
     if _cascade_removes_enemy(board, color, action):
         return False
     if _cascade_targets_height_one_enemy(board, color, action):
+        return False
+    if _cascade_merges_friendly_stack(board, color, action):
         return False
     return True
 
@@ -406,6 +410,21 @@ def _cascade_targets_height_one_enemy(
     return False
 
 
+def _cascade_merges_friendly_stack(
+    board: SearchBoard, color: PlayerColor, action: CascadeAction
+) -> bool:
+    source = board._state.get(action.coord)
+    if source is None or source.color != color or source.height < 2:
+        return False
+
+    dest = _destination(action.coord, action.direction)
+    if dest is None:
+        return False
+
+    target = board._state[dest]
+    return target.color == color
+
+
 def _reverses_previous_move(
     board: SearchBoard, action: MoveAction, recent_own_actions: list[Action]
 ) -> bool:
@@ -425,7 +444,26 @@ def _reverses_previous_move(
         return False
 
     cell = board._state.get(action.coord)
-    return cell is not None and cell.height >= 4
+    return cell is not None and not cell.is_empty
+
+
+def _recreates_two_ply_cycle(
+    action: MoveAction, recent_own_actions: list[Action]
+) -> bool:
+    if len(recent_own_actions) < 2:
+        return False
+
+    first = recent_own_actions[-2]
+    second = recent_own_actions[-1]
+    if not isinstance(first, MoveAction) or not isinstance(second, MoveAction):
+        return False
+
+    try:
+        first_dest = first.coord + first.direction
+    except ValueError:
+        return False
+
+    return action.coord == first_dest and action.direction == -second.direction
 
 
 def _is_bad_high_stack_capture(
@@ -542,7 +580,7 @@ class Agent:
             if not cell.is_empty
         )
         self._position_history.append(board_hash)
-        self._position_history = self._position_history[-8:]
+        self._position_history = self._position_history[-4:]
 
         match action:
             case PlaceAction(coord):

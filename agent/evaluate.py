@@ -4,6 +4,7 @@ from .board import Board
 from referee.game import (
     Action,
     CascadeAction,
+    CARDINAL_DIRECTIONS,
     Coord,
     Direction,
     EatAction,
@@ -55,12 +56,18 @@ BOARD_SIZE = 8
 BOARD_CENTER = 3.5
 MAX_USEFUL_MERGE = 8
 
-W_TOKEN = 10.0
-W_HEIGHT_ADV = 5.0
-W_CASCADE = 8.0
-W_EAT = 6.0
+W_TOKEN = 12.0
+W_HEIGHT_ADV = 3.0
+W_CASCADE = 2.0
+W_EAT = 5.0
 W_EDGE = -3.0
-W_CONSOL = 2.0
+W_CONSOL = 0.5
+W_ENEMY_STACK_COUNT = -6.0
+W_ENDGAME_TOKEN = 12.0
+W_ENDGAME_STACK = 10.0
+W_HIGH_EDGE = -4.0
+W_HIGH_CORNER = -10.0
+W_MOBILITY = 1.5
 
 W_PLACE_CENTRALITY = 4.0
 W_PLACE_SPREAD = 3.0
@@ -88,6 +95,9 @@ def evaluate(board: Board, color: PlayerColor) -> float:
     eat = _eat_threat(board, color, opponent)
     edge = _edge_danger(board, color)
     consol = _stack_consolidation(board, color)
+    enemy_stack_count = _stack_count(board, opponent)
+    high_edge, high_corner = _high_stack_edge_corner_penalty(board, color)
+    mobility = _mobility_score(board, color) - _mobility_score(board, opponent)
 
     total = (
         W_TOKEN * token_adv
@@ -96,7 +106,17 @@ def evaluate(board: Board, color: PlayerColor) -> float:
         + W_EAT * eat
         + W_EDGE * edge
         + W_CONSOL * consol
+        + W_ENEMY_STACK_COUNT * enemy_stack_count
+        + W_HIGH_EDGE * high_edge
+        + W_HIGH_CORNER * high_corner
+        + W_MOBILITY * mobility
     )
+
+    opponent_tokens = _total_tokens(board, opponent)
+    if opponent_tokens <= 4:
+        total += W_ENDGAME_TOKEN * (4 - opponent_tokens)
+        total += W_ENDGAME_STACK * (4 - enemy_stack_count)
+
     return float(total)
 
 
@@ -335,6 +355,53 @@ def _stack_consolidation(board: Board, color: PlayerColor) -> float:
     if not stacks:
         return 0.0
     return float(max(height for _, height in stacks) - len(stacks))
+
+
+def _stack_count(board: Board, color: PlayerColor) -> int:
+    return len(_get_stacks(board, color))
+
+
+def _high_stack_edge_corner_penalty(
+    board: Board, color: PlayerColor
+) -> tuple[float, float]:
+    edge_penalty = 0.0
+    corner_penalty = 0.0
+
+    for coord, height in _get_stacks(board, color):
+        if height < 4:
+            continue
+        if _is_corner(coord):
+            corner_penalty += height * 2.0
+        elif _is_near_edge(coord):
+            edge_penalty += height
+
+    return edge_penalty, corner_penalty
+
+
+def _mobility_score(board: Board, color: PlayerColor) -> float:
+    score = 0.0
+
+    for coord, height in _get_stacks(board, color):
+        legal = 0
+        capture = 0
+
+        for direction in CARDINAL_DIRECTIONS:
+            dest = _next_coord(coord, direction)
+            if dest is None:
+                continue
+
+            target = _stack_at(board, dest)
+            if target is None or target[0] == color:
+                legal += 1
+            elif target[0] == color.opponent and height >= target[1]:
+                capture += 1
+
+        if height >= 4:
+            score += legal * 1.5 + capture * 4.0
+        else:
+            score += legal + capture * 3.0
+
+    return score
 
 
 def _eat_threat_count(

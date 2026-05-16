@@ -43,15 +43,20 @@ def get_all_actions(board: SearchBoard, color: PlayerColor) -> list[Action]:
 
 
 def find_best_action(
-    board: SearchBoard, color: PlayerColor, depth: int = 3
+    board: SearchBoard,
+    color: PlayerColor,
+    depth: int = 3,
+    recent_own_actions: list[Action] | None = None,
 ) -> Action | None:
     """Return the best action using the original stable action order.
 
-    Only one tactical shortcut is added: if a legal action wins immediately,
-    take it. Otherwise, keep the old search behaviour so the agent does not
+    Tactical shortcuts are kept at root only: immediate wins, then safe
+    captures. Otherwise, keep the old search behaviour so the agent does not
     over-prioritise risky cascades or speculative moves.
     """
-    for action in get_all_actions(board, color):
+    actions = get_all_actions(board, color)
+
+    for action in actions:
         board.apply_action(action)
         try:
             if board.game_over and board.winner_color == color:
@@ -59,15 +64,23 @@ def find_best_action(
         finally:
             board.undo_action()
 
+    tactical_eat = find_tactical_capture(board, color, actions)
+    if tactical_eat is not None:
+        return tactical_eat
+
     best_action = None
     best_score = -math.inf
 
-    for action in get_all_actions(board, color):
+    for action in actions:
+        root_adjustment = _root_action_adjustment(
+            board, color, action, recent_own_actions or []
+        )
         board.apply_action(action)
         try:
             score = alphabeta(board, depth - 1, -math.inf, math.inf, False, color)
         finally:
             board.undo_action()
+        score += root_adjustment
 
         if score > best_score:
             best_score = score
@@ -88,6 +101,9 @@ def alphabeta(
         return _terminal_score(board, color, depth)
 
     if depth == 0:
+        capture_score = evaluate_best_safe_capture_leaf(board, color)
+        if capture_score is not None:
+            return capture_score
         return evaluate(board, color)
 
     actions = get_all_actions(board, board._turn_color)
@@ -126,6 +142,208 @@ def _terminal_score(board: SearchBoard, color: PlayerColor, depth_left: int) -> 
     return -TERMINAL_WIN - depth_left
 
 
+def find_tactical_capture(
+    board: SearchBoard, color: PlayerColor, actions: list[Action]
+) -> Action | None:
+    eat_actions = [action for action in actions if isinstance(action, EatAction)]
+    safe_eats: list[tuple[int, int, Action]] = []
+
+    for action in eat_actions:
+        before_enemy_tokens = _token_count(board, color.opponent)
+        before_enemy_stacks = _stack_count(board, color.opponent)
+        target_height = _target_height(board, action)
+
+        board.apply_action(action)
+        try:
+            if board.game_over:
+                if board.winner_color == color:
+                    return action
+                continue
+
+            after_enemy_tokens = _token_count(board, color.opponent)
+            after_enemy_stacks = _stack_count(board, color.opponent)
+            tokens_removed = before_enemy_tokens - after_enemy_tokens
+            stacks_removed = before_enemy_stacks - after_enemy_stacks
+
+            if tokens_removed <= 0 and stacks_removed <= 0:
+                continue
+            if opponent_has_immediate_win(board, color.opponent):
+                continue
+            if _is_bad_high_stack_capture(board, action, target_height):
+                continue
+
+            safe_eats.append((tokens_removed, stacks_removed, action))
+        finally:
+            board.undo_action()
+
+    if not safe_eats:
+        return None
+    return max(safe_eats, key=lambda item: (item[0], item[1]))[2]
+
+
+def evaluate_best_safe_capture_leaf(
+    board: SearchBoard, perspective: PlayerColor
+) -> float | None:
+    color = board._turn_color
+    scores = []
+
+    for action in get_all_actions(board, color):
+        if not isinstance(action, EatAction):
+            continue
+        before_enemy_tokens = _token_count(board, color.opponent)
+        before_enemy_stacks = _stack_count(board, color.opponent)
+
+        board.apply_action(action)
+        try:
+            if board.game_over:
+                scores.append(_terminal_score(board, perspective, 0))
+                continue
+
+            tokens_removed = before_enemy_tokens - _token_count(board, color.opponent)
+            stacks_removed = before_enemy_stacks - _stack_count(board, color.opponent)
+            if tokens_removed <= 0 and stacks_removed <= 0:
+                continue
+            if opponent_has_immediate_win(board, color.opponent):
+                continue
+
+            scores.append(evaluate(board, perspective))
+        finally:
+            board.undo_action()
+
+    if not scores:
+        return None
+    if color == perspective:
+        return max(scores)
+    return min(scores)
+
+
+def opponent_has_immediate_win(board: SearchBoard, opponent: PlayerColor) -> bool:
+    for action in get_all_actions(board, opponent):
+        board.apply_action(action)
+        try:
+            if board.game_over and board.winner_color == opponent:
+                return True
+        finally:
+            board.undo_action()
+    return False
+
+
+def source_stack_has_legal_eat(
+    board: SearchBoard, color: PlayerColor, coord: Coord
+) -> bool:
+    cell = board._state.get(coord)
+    if cell is None or cell.color != color:
+        return False
+
+    for direction in CARDINAL_DIRECTIONS:
+        try:
+            dest = coord + direction
+        except ValueError:
+            continue
+
+        target = board._state[dest]
+        if target.color == color.opponent and cell.height >= target.height:
+            return True
+    return False
+
+
+def _root_action_adjustment(
+    board: SearchBoard,
+    color: PlayerColor,
+    action: Action,
+    recent_own_actions: list[Action],
+) -> float:
+    adjustment = 0.0
+
+    if isinstance(action, MoveAction) and source_stack_has_legal_eat(
+        board, color, action.coord
+    ):
+        adjustment -= 50.0
+
+    if isinstance(action, MoveAction) and _reverses_previous_move(
+        board, action, recent_own_actions
+    ):
+        adjustment -= 15.0
+
+    return adjustment
+
+
+def _reverses_previous_move(
+    board: SearchBoard, action: MoveAction, recent_own_actions: list[Action]
+) -> bool:
+    if not recent_own_actions:
+        return False
+
+    previous = recent_own_actions[-1]
+    if not isinstance(previous, MoveAction):
+        return False
+
+    try:
+        previous_dest = previous.coord + previous.direction
+    except ValueError:
+        return False
+
+    if action.coord != previous_dest or action.direction != -previous.direction:
+        return False
+
+    cell = board._state.get(action.coord)
+    return cell is not None and cell.height >= 4
+
+
+def _is_bad_high_stack_capture(
+    board_after: SearchBoard, action: EatAction, target_height: int
+) -> bool:
+    dest = _destination(action.coord, action.direction)
+    if dest is None:
+        return False
+
+    cell = board_after._state[dest]
+    if cell.is_empty or cell.height < 4:
+        return False
+
+    if _is_corner(dest):
+        return target_height < 2
+    if _is_edge(dest):
+        return target_height < 2
+    return False
+
+
+def _target_height(board: SearchBoard, action: EatAction) -> int:
+    dest = _destination(action.coord, action.direction)
+    if dest is None:
+        return 0
+    return board._state[dest].height
+
+
+def _destination(coord: Coord, direction: Direction) -> Coord | None:
+    try:
+        return coord + direction
+    except ValueError:
+        return None
+
+
+def _token_count(board: SearchBoard, color: PlayerColor) -> int:
+    return sum(cell.height for cell in board._state.values() if cell.color == color)
+
+
+def _stack_count(board: SearchBoard, color: PlayerColor) -> int:
+    return sum(1 for cell in board._state.values() if cell.color == color)
+
+
+def _is_edge(coord: Coord) -> bool:
+    return (
+        coord.r == 0
+        or coord.r == BOARD_SIZE - 1
+        or coord.c == 0
+        or coord.c == BOARD_SIZE - 1
+    )
+
+
+def _is_corner(coord: Coord) -> bool:
+    edge_values = {0, BOARD_SIZE - 1}
+    return coord.r in edge_values and coord.c in edge_values
+
+
 class Agent:
     """
     This class is the "entry point" for your agent, providing an interface to
@@ -141,6 +359,7 @@ class Agent:
         self._search_board = SearchBoard()
         self._color = color
         self._turn_count = 0
+        self._recent_own_actions = []
         match color:
             case PlayerColor.RED:
                 print("Testing: I am playing as RED (first player)")
@@ -155,7 +374,9 @@ class Agent:
         if self._turn_count < 4:
             return self._best_placement_action()
 
-        action = find_best_action(self._search_board, self._color)
+        action = find_best_action(
+            self._search_board, self._color, recent_own_actions=self._recent_own_actions
+        )
         if action is not None:
             return action
 
@@ -168,6 +389,8 @@ class Agent:
         """
         if color == self._color:
             self._turn_count += 1
+            self._recent_own_actions.append(action)
+            self._recent_own_actions = self._recent_own_actions[-4:]
 
         self._board.apply_action(color, action)
         self._search_board.apply_action(action)

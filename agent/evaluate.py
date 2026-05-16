@@ -57,17 +57,18 @@ BOARD_CENTER = 3.5
 MAX_USEFUL_MERGE = 8
 
 W_TOKEN = 12.0
-W_HEIGHT_ADV = 3.0
-W_CASCADE = 2.0
+W_HEIGHT_ADV = 5.0
+W_CASCADE = 7.0
 W_EAT = 5.0
 W_EDGE = -3.0
-W_CONSOL = 0.5
+W_CONSOL = 2.0
 W_ENEMY_STACK_COUNT = -6.0
 W_ENDGAME_TOKEN = 12.0
 W_ENDGAME_STACK = 10.0
 W_HIGH_EDGE = -4.0
 W_HIGH_CORNER = -10.0
 W_MOBILITY = 1.5
+W_EAT_CLUSTER = 8.0
 
 W_PLACE_CENTRALITY = 4.0
 W_PLACE_SPREAD = 3.0
@@ -98,6 +99,7 @@ def evaluate(board: Board, color: PlayerColor) -> float:
     enemy_stack_count = _stack_count(board, opponent)
     high_edge, high_corner = _high_stack_edge_corner_penalty(board, color)
     mobility = _mobility_score(board, color) - _mobility_score(board, opponent)
+    eat_cluster = _eat_cluster_score(board, color) - _eat_cluster_score(board, opponent)
 
     total = (
         W_TOKEN * token_adv
@@ -110,6 +112,7 @@ def evaluate(board: Board, color: PlayerColor) -> float:
         + W_HIGH_EDGE * high_edge
         + W_HIGH_CORNER * high_corner
         + W_MOBILITY * mobility
+        + W_EAT_CLUSTER * eat_cluster
     )
 
     opponent_tokens = _total_tokens(board, opponent)
@@ -413,6 +416,33 @@ def _eat_threat_count(
     for coord, height in _get_stacks(board, attacker):
         for enemy_coord, enemy_height in defender_stacks:
             if _is_adjacent(coord, enemy_coord) and height >= enemy_height:
+                count += 1
+
+    return count
+
+
+def _eat_cluster_score(board: Board, color: PlayerColor) -> float:
+    eat_count = _legal_eat_count(board, color)
+    if eat_count < 2:
+        return 0.0
+    return float(eat_count - 1)
+
+
+def _legal_eat_count(board: Board, color: PlayerColor) -> int:
+    count = 0
+
+    for coord, height in _get_stacks(board, color):
+        for direction in CARDINAL_DIRECTIONS:
+            dest = _next_coord(coord, direction)
+            if dest is None:
+                continue
+
+            target = _stack_at(board, dest)
+            if (
+                target is not None
+                and target[0] == color.opponent
+                and height >= target[1]
+            ):
                 count += 1
 
     return count

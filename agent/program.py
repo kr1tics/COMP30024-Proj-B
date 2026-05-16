@@ -2,6 +2,7 @@
 # Project Part B: Game Playing Agent
 
 import math
+import time
 
 from agent.board import Board
 from agent.evaluate import TERMINAL_WIN, evaluate, evaluate_placement
@@ -11,6 +12,12 @@ from referee.game import Board as SearchBoard
 
 
 BOARD_SIZE = 8
+DEFAULT_TIME_BUDGET = 2.5
+MAX_SEARCH_DEPTH = 20
+
+
+class _SearchTimeout(Exception):
+    pass
 
 
 def get_all_actions(board: SearchBoard, color: PlayerColor) -> list[Action]:
@@ -45,15 +52,18 @@ def get_all_actions(board: SearchBoard, color: PlayerColor) -> list[Action]:
 def find_best_action(
     board: SearchBoard,
     color: PlayerColor,
-    depth: int = 3,
+    depth: int = MAX_SEARCH_DEPTH,
+    time_budget: float = DEFAULT_TIME_BUDGET,
     recent_own_actions: list[Action] | None = None,
+    position_history: list[frozenset] | None = None,
 ) -> Action | None:
-    """Return the best action using the original stable action order.
+    """Return the best action using deadline-aware iterative deepening.
 
     Tactical shortcuts are kept at root only: immediate wins, then safe
-    captures. Otherwise, keep the old search behaviour so the agent does not
-    over-prioritise risky cascades or speculative moves.
+    captures. Otherwise, search progressively deeper until the turn budget is
+    used, returning the best fully completed depth.
     """
+    deadline = time.perf_counter() + time_budget
     actions = get_all_actions(board, color)
 
     for action in actions:
@@ -69,26 +79,61 @@ def find_best_action(
         return tactical_eat
 
     search_actions = _filter_root_cascade_actions(board, color, actions)
+    if not search_actions:
+        return None
 
-    best_action = None
-    best_score = -math.inf
+    completed_best = search_actions[0]
+    completed_score = -math.inf
+    max_depth = max(1, depth)
 
-    for action in search_actions:
-        root_adjustment = _root_action_adjustment(
-            board, color, action, recent_own_actions or []
-        )
-        board.apply_action(action)
+    for current_depth in range(1, max_depth + 1):
+        depth_best = None
+        depth_score = -math.inf
         try:
-            score = alphabeta(board, depth - 1, -math.inf, math.inf, False, color)
-        finally:
-            board.undo_action()
-        score += root_adjustment
+            for action in search_actions:
+                _check_deadline(deadline)
+                root_adjustment = _root_action_adjustment(
+                    board, color, action, recent_own_actions or []
+                )
+                board.apply_action(action)
+                try:
+                    score = alphabeta(
+                        board,
+                        current_depth - 1,
+                        -math.inf,
+                        math.inf,
+                        False,
+                        color,
+                        deadline,
+                    )
+                    repeated_position = False
+                    if position_history:
+                        board_hash = frozenset(
+                            (coord, cell.color, cell.height)
+                            for coord, cell in board._state.items()
+                            if not cell.is_empty
+                        )
+                        repeated_position = board_hash in position_history
+                finally:
+                    board.undo_action()
+                score += root_adjustment
+                if position_history and repeated_position:
+                    score -= 500.0
 
-        if score > best_score:
-            best_score = score
-            best_action = action
+                if score > depth_score:
+                    depth_score = score
+                    depth_best = action
+        except _SearchTimeout:
+            break
 
-    return best_action
+        if depth_best is not None:
+            completed_best = depth_best
+            completed_score = depth_score
+
+        if abs(completed_score) >= TERMINAL_WIN:
+            break
+
+    return completed_best
 
 
 def alphabeta(
@@ -98,12 +143,15 @@ def alphabeta(
     beta: float,
     maximising: bool,
     color: PlayerColor,
+    deadline: float | None = None,
 ) -> float:
+    _check_deadline(deadline)
+
     if board.game_over:
         return _terminal_score(board, color, depth)
 
     if depth == 0:
-        capture_score = evaluate_best_safe_capture_leaf(board, color)
+        capture_score = evaluate_best_safe_capture_leaf(board, color, deadline)
         if capture_score is not None:
             return capture_score
         return evaluate(board, color)
@@ -116,9 +164,17 @@ def alphabeta(
     if maximising:
         value = -math.inf
         for action in actions:
+            _check_deadline(deadline)
             board.apply_action(action)
-            value = max(value, alphabeta(board, depth - 1, alpha, beta, False, color))
-            board.undo_action()
+            try:
+                value = max(
+                    value,
+                    alphabeta(
+                        board, depth - 1, alpha, beta, False, color, deadline
+                    ),
+                )
+            finally:
+                board.undo_action()
             alpha = max(alpha, value)
             if value >= beta:
                 break
@@ -126,13 +182,26 @@ def alphabeta(
     else:
         value = math.inf
         for action in actions:
+            _check_deadline(deadline)
             board.apply_action(action)
-            value = min(value, alphabeta(board, depth - 1, alpha, beta, True, color))
-            board.undo_action()
+            try:
+                value = min(
+                    value,
+                    alphabeta(
+                        board, depth - 1, alpha, beta, True, color, deadline
+                    ),
+                )
+            finally:
+                board.undo_action()
             beta = min(beta, value)
             if value <= alpha:
                 break
         return value
+
+
+def _check_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.perf_counter() >= deadline:
+        raise _SearchTimeout()
 
 
 def _terminal_score(board: SearchBoard, color: PlayerColor, depth_left: int) -> float:
@@ -184,12 +253,13 @@ def find_tactical_capture(
 
 
 def evaluate_best_safe_capture_leaf(
-    board: SearchBoard, perspective: PlayerColor
+    board: SearchBoard, perspective: PlayerColor, deadline: float | None = None
 ) -> float | None:
     color = board._turn_color
     scores = []
 
     for action in get_all_actions(board, color):
+        _check_deadline(deadline)
         if not isinstance(action, EatAction):
             continue
         before_enemy_tokens = _token_count(board, color.opponent)
@@ -205,7 +275,7 @@ def evaluate_best_safe_capture_leaf(
             stacks_removed = before_enemy_stacks - _stack_count(board, color.opponent)
             if tokens_removed <= 0 and stacks_removed <= 0:
                 continue
-            if opponent_has_immediate_win(board, color.opponent):
+            if opponent_has_immediate_win(board, color.opponent, deadline):
                 continue
 
             scores.append(evaluate(board, perspective))
@@ -219,8 +289,11 @@ def evaluate_best_safe_capture_leaf(
     return min(scores)
 
 
-def opponent_has_immediate_win(board: SearchBoard, opponent: PlayerColor) -> bool:
+def opponent_has_immediate_win(
+    board: SearchBoard, opponent: PlayerColor, deadline: float | None = None
+) -> bool:
     for action in get_all_actions(board, opponent):
+        _check_deadline(deadline)
         board.apply_action(action)
         try:
             if board.game_over and board.winner_color == opponent:
@@ -425,6 +498,7 @@ class Agent:
         self._color = color
         self._turn_count = 0
         self._recent_own_actions = []
+        self._position_history: list[frozenset] = []
         match color:
             case PlayerColor.RED:
                 print("Testing: I am playing as RED (first player)")
@@ -440,7 +514,10 @@ class Agent:
             return self._best_placement_action()
 
         action = find_best_action(
-            self._search_board, self._color, recent_own_actions=self._recent_own_actions
+            self._search_board,
+            self._color,
+            recent_own_actions=self._recent_own_actions,
+            position_history=self._position_history,
         )
         if action is not None:
             return action
@@ -459,6 +536,13 @@ class Agent:
 
         self._board.apply_action(color, action)
         self._search_board.apply_action(action)
+        board_hash = frozenset(
+            (coord, cell.color, cell.height)
+            for coord, cell in self._search_board._state.items()
+            if not cell.is_empty
+        )
+        self._position_history.append(board_hash)
+        self._position_history = self._position_history[-8:]
 
         match action:
             case PlaceAction(coord):

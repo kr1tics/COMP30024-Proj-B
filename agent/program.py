@@ -68,10 +68,12 @@ def find_best_action(
     if tactical_eat is not None:
         return tactical_eat
 
+    search_actions = _filter_root_cascade_actions(board, color, actions)
+
     best_action = None
     best_score = -math.inf
 
-    for action in actions:
+    for action in search_actions:
         root_adjustment = _root_action_adjustment(
             board, color, action, recent_own_actions or []
         )
@@ -265,7 +267,70 @@ def _root_action_adjustment(
     ):
         adjustment -= 15.0
 
+    if isinstance(action, CascadeAction) and _is_bad_non_capture_cascade(
+        board, color, action
+    ):
+        adjustment -= 150.0
+
     return adjustment
+
+
+def _filter_root_cascade_actions(
+    board: SearchBoard, color: PlayerColor, actions: list[Action]
+) -> list[Action]:
+    filtered = [
+        action for action in actions
+        if not isinstance(action, CascadeAction)
+        or not _is_bad_non_capture_cascade(board, color, action)
+    ]
+    return filtered or actions
+
+
+def _is_bad_non_capture_cascade(
+    board: SearchBoard, color: PlayerColor, action: CascadeAction
+) -> bool:
+    if _cascade_removes_enemy(board, color, action):
+        return False
+    if _cascade_targets_height_one_enemy(board, color, action):
+        return False
+    return True
+
+
+def _cascade_removes_enemy(
+    board: SearchBoard, color: PlayerColor, action: CascadeAction
+) -> bool:
+    before_enemy_tokens = _token_count(board, color.opponent)
+    before_enemy_stacks = _stack_count(board, color.opponent)
+
+    board.apply_action(action)
+    try:
+        after_enemy_tokens = _token_count(board, color.opponent)
+        after_enemy_stacks = _stack_count(board, color.opponent)
+        return (
+            after_enemy_tokens < before_enemy_tokens
+            or after_enemy_stacks < before_enemy_stacks
+        )
+    finally:
+        board.undo_action()
+
+
+def _cascade_targets_height_one_enemy(
+    board: SearchBoard, color: PlayerColor, action: CascadeAction
+) -> bool:
+    source = board._state.get(action.coord)
+    if source is None or source.color != color:
+        return False
+
+    for steps in range(1, source.height + 1):
+        target = _destination(action.coord, action.direction, steps)
+        if target is None:
+            continue
+
+        cell = board._state[target]
+        if cell.color == color.opponent and cell.height == 1:
+            return True
+
+    return False
 
 
 def _reverses_previous_move(
@@ -315,9 +380,9 @@ def _target_height(board: SearchBoard, action: EatAction) -> int:
     return board._state[dest].height
 
 
-def _destination(coord: Coord, direction: Direction) -> Coord | None:
+def _destination(coord: Coord, direction: Direction, steps: int = 1) -> Coord | None:
     try:
-        return coord + direction
+        return Coord(coord.r + direction.r * steps, coord.c + direction.c * steps)
     except ValueError:
         return None
 

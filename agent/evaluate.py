@@ -61,6 +61,7 @@ W_HEIGHT_ADV = 5.0
 W_CASCADE = 7.0
 W_EAT = 5.0
 W_EDGE = -3.0
+W_SOFT_EDGE = -30.0
 W_CONSOL = 2.0
 W_ENEMY_STACK_COUNT = -6.0
 W_ENDGAME_TOKEN = 12.0
@@ -95,6 +96,7 @@ def evaluate(board: Board, color: PlayerColor) -> float:
     cascade = _cascade_threat(board, color, opponent)
     eat = _eat_threat(board, color, opponent)
     edge = _edge_danger(board, color)
+    soft_edge = _edge_danger(board, color)
     consol = _stack_consolidation(board, color)
     enemy_stack_count = _stack_count(board, opponent)
     high_edge, high_corner = _high_stack_edge_corner_penalty(board, color)
@@ -107,6 +109,7 @@ def evaluate(board: Board, color: PlayerColor) -> float:
         + W_CASCADE * cascade
         + W_EAT * eat
         + W_EDGE * edge
+        + W_SOFT_EDGE * soft_edge
         + W_CONSOL * consol
         + W_ENEMY_STACK_COUNT * enemy_stack_count
         + W_HIGH_EDGE * high_edge

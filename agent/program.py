@@ -118,7 +118,7 @@ def find_best_action(
                     board.undo_action()
                 score += root_adjustment
                 if position_history and repeated_position:
-                    score -= 150.0
+                    score -= 200.0
 
                 if score > depth_score:
                     depth_score = score
@@ -580,7 +580,7 @@ class Agent:
             if not cell.is_empty
         )
         self._position_history.append(board_hash)
-        self._position_history = self._position_history[-4:]
+        self._position_history = self._position_history[-6:]
 
         match action:
             case PlaceAction(coord):

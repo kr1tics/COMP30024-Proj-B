@@ -73,6 +73,7 @@ W_HIGH_CORNER = -10.0
 W_MOBILITY = 1.5
 W_EAT_CLUSTER = 8.0
 EAT_LOOKAHEAD_PENALTY = W_TOKEN
+CASCADE_LOOKAHEAD_PENALTY = EAT_LOOKAHEAD_PENALTY
 
 W_PLACE_CENTRALITY = 4.0
 W_PLACE_SPREAD = 3.0
@@ -84,6 +85,7 @@ TERMINAL_WIN = 1e9
 
 def evaluate(board: Board, color: PlayerColor) -> float:
     """Return a heuristic score from color's perspective."""
+    apply_lookahead = color == OWN_COLOUR
     is_terminal, winner = _is_terminal(board)
     if is_terminal:
         if winner is None:
@@ -106,7 +108,12 @@ def evaluate(board: Board, color: PlayerColor) -> float:
     high_edge, high_corner = _high_stack_edge_corner_penalty(board, color)
     mobility = _mobility_score(board, color) - _mobility_score(board, opponent)
     eat_cluster = _eat_cluster_score(board, color) - _eat_cluster_score(board, opponent)
-    eat_lookahead_danger = _best_opponent_eat_token_count(board, color) is not None
+    eat_lookahead_danger = (
+        apply_lookahead and _best_opponent_eat_token_count(board, color) is not None
+    )
+    cascade_lookahead_loss = (
+        _best_opponent_cascade_loss(board)[0] if apply_lookahead else 0
+    )
 
     total = (
         W_TOKEN * token_adv
@@ -124,6 +131,8 @@ def evaluate(board: Board, color: PlayerColor) -> float:
     )
     if eat_lookahead_danger:
         total -= EAT_LOOKAHEAD_PENALTY  # one-ply eat lookahead: penalise any position where opponent can eat own next turn
+    if cascade_lookahead_loss:
+        total -= CASCADE_LOOKAHEAD_PENALTY * cascade_lookahead_loss
 
     opponent_tokens = _total_tokens(board, opponent)
     if opponent_tokens <= 4:
@@ -494,16 +503,91 @@ def _legal_eat_actions(board: Board, color: PlayerColor) -> list[EatAction]:
 def _state_after_eat(
     board: Board, action: EatAction
 ) -> dict[Coord, tuple[PlayerColor, int]]:
-    state = {
-        coord: (stack_color, height)
-        for stack_color in (OWN_COLOUR, OPPONENT_COLOUR)
-        for coord, height in _get_stacks(board, stack_color)
-    }
+    state = _tuple_state(board)
     attacker = state.pop(action.coord, None)
     dest = _next_coord(action.coord, action.direction)
     if attacker is not None and dest is not None:
         state[dest] = attacker
     return state
+
+
+def _best_opponent_cascade_loss(board: Board) -> tuple[int, int]:
+    best_removed = 0
+    best_advantage = 0
+    before_own = _total_tokens(board, OWN_COLOUR)
+
+    for coord, height in _get_stacks(board, OPPONENT_COLOUR):
+        if height < 2:
+            continue
+
+        for direction in CARDINAL_DIRECTIONS:
+            resulting_state = _state_after_cascade(board, coord, direction)
+            own_removed = before_own - _token_count_in_state(
+                resulting_state, OWN_COLOUR
+            )
+            if own_removed <= 0:
+                continue
+
+            opponent_advantage = _token_count_in_state(
+                resulting_state, OPPONENT_COLOUR
+            ) - _token_count_in_state(resulting_state, OWN_COLOUR)
+            if (
+                own_removed > best_removed
+                or own_removed == best_removed
+                and opponent_advantage > best_advantage
+            ):
+                best_removed = own_removed
+                best_advantage = opponent_advantage
+
+    return best_removed, best_advantage
+
+
+def _state_after_cascade(
+    board: Board, coord: Coord, direction: Direction
+) -> dict[Coord, tuple[PlayerColor, int]]:
+    state = _tuple_state(board)
+    source = state.pop(coord, None)
+    if source is None:
+        return state
+
+    _, height = source
+    for steps in range(1, height + 1):
+        target = _next_coord(coord, direction, steps)
+        if target is None:
+            continue
+
+        if target in state:
+            _push_stack_in_state(state, target, direction)
+        state[target] = (OPPONENT_COLOUR, 1)
+
+    return state
+
+
+def _push_stack_in_state(
+    state: dict[Coord, tuple[PlayerColor, int]], coord: Coord, direction: Direction
+) -> None:
+    stack = state.get(coord)
+    if stack is None:
+        return
+
+    dest = _next_coord(coord, direction)
+    if dest is None:
+        state.pop(coord, None)
+        return
+
+    if dest in state:
+        _push_stack_in_state(state, dest, direction)
+
+    state[dest] = stack
+    state.pop(coord, None)
+
+
+def _tuple_state(board: Board) -> dict[Coord, tuple[PlayerColor, int]]:
+    return {
+        coord: (stack_color, height)
+        for stack_color in (OWN_COLOUR, OPPONENT_COLOUR)
+        for coord, height in _get_stacks(board, stack_color)
+    }
 
 
 def _token_count_in_state(

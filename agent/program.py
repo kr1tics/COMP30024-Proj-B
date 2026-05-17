@@ -6,6 +6,7 @@ import math
 import random
 import time
 
+import agent.evaluate as evaluator
 from agent.board import Board
 from agent.evaluate import TERMINAL_WIN, evaluate, evaluate_placement
 from referee.game import PlayerColor, Coord, Direction, CARDINAL_DIRECTIONS, \
@@ -625,6 +626,8 @@ class Agent:
         self._board = Board()
         self._search_board = SearchBoard()
         self._color = color
+        evaluator.OWN_COLOUR = color
+        evaluator.OPPONENT_COLOUR = color.opponent
         self._turn_count = 0
         self._recent_own_actions = []
         self._position_history: list[frozenset] = []

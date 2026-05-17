@@ -55,6 +55,8 @@ def _step(coord: Coord, direction: Direction, steps: int = 1) -> Coord:
 BOARD_SIZE = 8
 BOARD_CENTER = 3.5
 MAX_USEFUL_MERGE = 8
+OWN_COLOUR = PlayerColor.RED
+OPPONENT_COLOUR = PlayerColor.BLUE
 
 W_TOKEN = 12.0
 W_HEIGHT_ADV = 5.0
@@ -86,11 +88,12 @@ def evaluate(board: Board, color: PlayerColor) -> float:
     if is_terminal:
         if winner is None:
             return 0.0
-        if winner == color:
+        if winner == OWN_COLOUR:
             return TERMINAL_WIN
         return -TERMINAL_WIN
 
-    opponent = color.opponent
+    color = OWN_COLOUR
+    opponent = OPPONENT_COLOUR
 
     token_adv = _token_advantage(board, color, opponent)
     height_adv = _height_advantage(board, color, opponent)
@@ -120,7 +123,7 @@ def evaluate(board: Board, color: PlayerColor) -> float:
         + W_EAT_CLUSTER * eat_cluster
     )
     if eat_lookahead_danger:
-        total -= EAT_LOOKAHEAD_PENALTY  # one-ply eat lookahead: penalise any position where BLUE can eat RED next turn
+        total -= EAT_LOOKAHEAD_PENALTY  # one-ply eat lookahead: penalise any position where opponent can eat own next turn
 
     opponent_tokens = _total_tokens(board, opponent)
     if opponent_tokens <= 4:
@@ -134,7 +137,8 @@ def evaluate_placement(
     board: Board, color: PlayerColor, candidate_coord: Coord
 ) -> float:
     """Return a heuristic score for placing at candidate_coord."""
-    opponent = color.opponent
+    color = OWN_COLOUR
+    opponent = OPPONENT_COLOUR
 
     centrality = _placement_centrality(candidate_coord)
     spread = _placement_spread(board, color, candidate_coord)
@@ -458,9 +462,9 @@ def _legal_eat_count(board: Board, color: PlayerColor) -> int:
 def _best_opponent_eat_token_count(board: Board, color: PlayerColor) -> int | None:
     best_token_count = None
 
-    for action in _legal_eat_actions(board, color.opponent):
+    for action in _legal_eat_actions(board, OPPONENT_COLOUR):
         resulting_state = _state_after_eat(board, action)
-        token_count = _token_count_in_state(resulting_state, color)
+        token_count = _token_count_in_state(resulting_state, OWN_COLOUR)
         if best_token_count is None or token_count < best_token_count:
             best_token_count = token_count
 
@@ -492,7 +496,7 @@ def _state_after_eat(
 ) -> dict[Coord, tuple[PlayerColor, int]]:
     state = {
         coord: (stack_color, height)
-        for stack_color in (PlayerColor.RED, PlayerColor.BLUE)
+        for stack_color in (OWN_COLOUR, OPPONENT_COLOUR)
         for coord, height in _get_stacks(board, stack_color)
     }
     attacker = state.pop(action.coord, None)

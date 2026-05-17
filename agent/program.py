@@ -1,7 +1,9 @@
 # COMP30024 Artificial Intelligence, Semester 1 2026
 # Project Part B: Game Playing Agent
 
+import logging
 import math
+import random
 import time
 
 from agent.board import Board
@@ -12,12 +14,28 @@ from referee.game import Board as SearchBoard
 
 
 BOARD_SIZE = 8
-DEFAULT_TIME_BUDGET = 2.5
-MAX_SEARCH_DEPTH = 20
+TOTAL_BUDGET = 175.0
+MAX_TURNS = 300
+MAX_TURN_ALLOWANCE = 6.0
+MIN_TURN_ALLOWANCE = 0.05
+MAX_DEPTH = 20
+GAME_START_TIME: float | None = None
 
 
-class _SearchTimeout(Exception):
-    pass
+def _now() -> float:
+    return time.monotonic()
+
+
+def _deadline_expired(deadline: float | None) -> bool:
+    return deadline is not None and _now() >= deadline
+
+
+def _turn_allowance(turn_number: int, now: float) -> float:
+    elapsed = now - (GAME_START_TIME if GAME_START_TIME is not None else now)
+    remaining = TOTAL_BUDGET - elapsed
+    turns_left = max(1, MAX_TURNS - turn_number + 1)
+    allowance = remaining / turns_left
+    return min(MAX_TURN_ALLOWANCE, max(MIN_TURN_ALLOWANCE, allowance))
 
 
 def get_all_actions(board: SearchBoard, color: PlayerColor) -> list[Action]:
@@ -52,8 +70,8 @@ def get_all_actions(board: SearchBoard, color: PlayerColor) -> list[Action]:
 def find_best_action(
     board: SearchBoard,
     color: PlayerColor,
-    depth: int = MAX_SEARCH_DEPTH,
-    time_budget: float = DEFAULT_TIME_BUDGET,
+    depth: int = MAX_DEPTH,
+    time_budget: float = MIN_TURN_ALLOWANCE,
     recent_own_actions: list[Action] | None = None,
     position_history: list[frozenset] | None = None,
 ) -> Action | None:
@@ -63,7 +81,6 @@ def find_best_action(
     captures. Otherwise, search progressively deeper until the turn budget is
     used, returning the best fully completed depth.
     """
-    deadline = time.perf_counter() + time_budget
     actions = get_all_actions(board, color)
 
     for action in actions:
@@ -82,62 +99,98 @@ def find_best_action(
     if not search_actions:
         return None
 
-    completed_best = search_actions[0]
-    completed_score = -math.inf
     max_depth = max(1, depth)
+    turn_start = _now()
+    best_move = _search_root(
+        board,
+        color,
+        search_actions,
+        1,
+        recent_own_actions or [],
+        position_history,
+        deadline=None,
+    )
 
-    for current_depth in range(1, max_depth + 1):
-        depth_best = None
-        depth_score = -math.inf
+    for current_depth in range(2, max_depth + 1):
+        if _now() - turn_start >= time_budget * 0.85:
+            break
+        result = _search_root(
+            board,
+            color,
+            search_actions,
+            current_depth,
+            recent_own_actions or [],
+            position_history,
+            deadline=turn_start + time_budget,
+        )
+        if result is not None:
+            best_move = result
+
+    return best_move
+
+
+def _search_root(
+    board: SearchBoard,
+    color: PlayerColor,
+    actions: list[Action],
+    depth: int,
+    recent_own_actions: list[Action],
+    position_history: list[frozenset] | None = None,
+    deadline: float | None = None,
+) -> Action | None:
+    if _deadline_expired(deadline):
+        return None
+
+    depth_best = None
+    depth_score = -math.inf
+
+    for action in actions:
+        if _deadline_expired(deadline):
+            return None
+
+        root_adjustment = _root_action_adjustment(
+            board, color, action, recent_own_actions
+        )
+        board.apply_action(action)
         try:
-            for action in search_actions:
-                _check_deadline(deadline)
-                root_adjustment = _root_action_adjustment(
-                    board, color, action, recent_own_actions or []
+            score = alphabeta(
+                board,
+                depth - 1,
+                -math.inf,
+                math.inf,
+                False,
+                color,
+                deadline=deadline,
+            )
+            if score is None:
+                return None
+
+            position_visits = 0
+            if position_history:
+                board_hash = frozenset(
+                    (coord, cell.color, cell.height)
+                    for coord, cell in board._state.items()
+                    if not cell.is_empty
                 )
-                board.apply_action(action)
-                try:
-                    score = alphabeta(
-                        board,
-                        current_depth - 1,
-                        -math.inf,
-                        math.inf,
-                        False,
-                        color,
-                        deadline,
-                    )
-                    position_visits = 0
-                    if position_history:
-                        board_hash = frozenset(
-                            (coord, cell.color, cell.height)
-                            for coord, cell in board._state.items()
-                            if not cell.is_empty
-                        )
-                        position_visits = position_history.count(board_hash)
-                finally:
-                    board.undo_action()
-                score += root_adjustment
-                if position_visits == 1:
-                    score -= 80.0
-                elif position_visits == 2:
-                    score -= 160.0
-                elif position_visits >= 3:
-                    score -= 240.0
+                position_visits = position_history.count(board_hash)
+        finally:
+            board.undo_action()
 
-                if score > depth_score:
-                    depth_score = score
-                    depth_best = action
-        except _SearchTimeout:
-            break
+        score += root_adjustment
+        if position_visits == 1:
+            score -= 80.0
+        elif position_visits == 2:
+            score -= 160.0
+        elif position_visits >= 3:
+            score -= 240.0
 
-        if depth_best is not None:
-            completed_best = depth_best
-            completed_score = depth_score
+        if score > depth_score:
+            depth_score = score
+            depth_best = action
 
-        if abs(completed_score) >= TERMINAL_WIN:
-            break
-
-    return completed_best
+    if abs(depth_score) >= TERMINAL_WIN:
+        return depth_best
+    return depth_best
 
 
 def alphabeta(
@@ -148,14 +201,17 @@ def alphabeta(
     maximising: bool,
     color: PlayerColor,
     deadline: float | None = None,
-) -> float:
-    _check_deadline(deadline)
+) -> float | None:
+    if _deadline_expired(deadline):
+        return None
 
     if board.game_over:
         return _terminal_score(board, color, depth)
 
     if depth == 0:
         capture_score = evaluate_best_safe_capture_leaf(board, color, deadline)
+        if _deadline_expired(deadline):
+            return None
         if capture_score is not None:
             return capture_score
         return evaluate(board, color)
@@ -168,15 +224,14 @@ def alphabeta(
     if maximising:
         value = -math.inf
         for action in actions:
-            _check_deadline(deadline)
             board.apply_action(action)
             try:
-                value = max(
-                    value,
-                    alphabeta(
-                        board, depth - 1, alpha, beta, False, color, deadline
-                    ),
+                child_value = alphabeta(
+                    board, depth - 1, alpha, beta, False, color, deadline
                 )
+                if child_value is None:
+                    return None
+                value = max(value, child_value)
             finally:
                 board.undo_action()
             alpha = max(alpha, value)
@@ -186,15 +241,14 @@ def alphabeta(
     else:
         value = math.inf
         for action in actions:
-            _check_deadline(deadline)
             board.apply_action(action)
             try:
-                value = min(
-                    value,
-                    alphabeta(
-                        board, depth - 1, alpha, beta, True, color, deadline
-                    ),
+                child_value = alphabeta(
+                    board, depth - 1, alpha, beta, True, color, deadline
                 )
+                if child_value is None:
+                    return None
+                value = min(value, child_value)
             finally:
                 board.undo_action()
             beta = min(beta, value)
@@ -203,9 +257,8 @@ def alphabeta(
         return value
 
 
-def _check_deadline(deadline: float | None) -> None:
-    if deadline is not None and time.perf_counter() >= deadline:
-        raise _SearchTimeout()
+def _check_deadline(deadline: float | None) -> bool:
+    return _deadline_expired(deadline)
 
 
 def _terminal_score(board: SearchBoard, color: PlayerColor, depth_left: int) -> float:
@@ -263,7 +316,8 @@ def evaluate_best_safe_capture_leaf(
     scores = []
 
     for action in get_all_actions(board, color):
-        _check_deadline(deadline)
+        if _check_deadline(deadline):
+            return None
         if not isinstance(action, EatAction):
             continue
         before_enemy_tokens = _token_count(board, color.opponent)
@@ -281,6 +335,8 @@ def evaluate_best_safe_capture_leaf(
                 continue
             if opponent_has_immediate_win(board, color.opponent, deadline):
                 continue
+            if _check_deadline(deadline):
+                return None
 
             scores.append(evaluate(board, perspective))
         finally:
@@ -297,7 +353,8 @@ def opponent_has_immediate_win(
     board: SearchBoard, opponent: PlayerColor, deadline: float | None = None
 ) -> bool:
     for action in get_all_actions(board, opponent):
-        _check_deadline(deadline)
+        if _check_deadline(deadline):
+            return False
         board.apply_action(action)
         try:
             if board.game_over and board.winner_color == opponent:
@@ -582,18 +639,40 @@ class Agent:
         This method is called by the referee each time it is the agent's turn
         to take an action. It must always return an action object.
         """
-        if self._turn_count < 4:
-            return self._best_placement_action()
+        global GAME_START_TIME
 
-        action = find_best_action(
-            self._search_board,
-            self._color,
-            recent_own_actions=self._recent_own_actions,
-            position_history=self._position_history,
-        )
-        if action is not None:
-            return action
+        try:
+            now = _now()
+            if GAME_START_TIME is None:
+                GAME_START_TIME = now
 
+            turn_number = self._search_board.turn_count + 1
+            allowance = _turn_allowance(turn_number, now)
+
+            if self._turn_count < 4:
+                return self._best_placement_action()
+
+            action = find_best_action(
+                self._search_board,
+                self._color,
+                time_budget=allowance,
+                recent_own_actions=self._recent_own_actions,
+                position_history=self._position_history,
+            )
+            if action is not None:
+                return action
+
+            logging.warning("Search returned no move; falling back to a random legal move.")
+            fallback = self._random_legal_action()
+            if fallback is not None:
+                return fallback
+        except Exception:
+            logging.warning("Turn decision failed; falling back to a random legal move.", exc_info=True)
+            fallback = self._safe_random_legal_action()
+            if fallback is not None:
+                return fallback
+
+        logging.warning("No legal fallback action found; using emergency move.")
         return MoveAction(Coord(0, 0), Direction.Down)
 
     def update(self, color: PlayerColor, action: Action, **referee: dict):
@@ -649,6 +728,25 @@ class Agent:
             ),
         )
         return PlaceAction(best_coord)
+
+    def _random_legal_action(self) -> Action | None:
+        if self._turn_count < 4:
+            candidates = self._valid_place_coords()
+            if candidates:
+                return PlaceAction(random.choice(candidates))
+            return None
+
+        actions = get_all_actions(self._search_board, self._color)
+        if actions:
+            return random.choice(actions)
+        return None
+
+    def _safe_random_legal_action(self) -> Action | None:
+        try:
+            return self._random_legal_action()
+        except Exception:
+            logging.warning("Random legal fallback failed.", exc_info=True)
+            return None
 
     def _valid_place_coords(self) -> list[Coord]:
         occupied = {

@@ -6,9 +6,9 @@ import math
 import random
 import time
 
-import agent.evaluate as evaluator
-from agent.board import Board
-from agent.evaluate import TERMINAL_WIN, evaluate, evaluate_placement
+from . import evaluate as evaluator
+from .board import Board
+from .evaluate import TERMINAL_WIN, evaluate, evaluate_placement
 from referee.game import PlayerColor, Coord, Direction, CARDINAL_DIRECTIONS, \
     Action, PlaceAction, MoveAction, EatAction, CascadeAction
 from referee.game import Board as SearchBoard

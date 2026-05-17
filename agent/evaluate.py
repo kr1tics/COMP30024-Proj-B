@@ -70,7 +70,7 @@ W_HIGH_EDGE = -4.0
 W_HIGH_CORNER = -10.0
 W_MOBILITY = 1.5
 W_EAT_CLUSTER = 8.0
-W_EAT_ADJACENCY_DANGER = -250.0
+EAT_LOOKAHEAD_PENALTY = W_TOKEN
 
 W_PLACE_CENTRALITY = 4.0
 W_PLACE_SPREAD = 3.0
@@ -103,7 +103,7 @@ def evaluate(board: Board, color: PlayerColor) -> float:
     high_edge, high_corner = _high_stack_edge_corner_penalty(board, color)
     mobility = _mobility_score(board, color) - _mobility_score(board, opponent)
     eat_cluster = _eat_cluster_score(board, color) - _eat_cluster_score(board, opponent)
-    eat_adjacency_danger = _eat_adjacency_danger(board, color)
+    eat_lookahead_danger = _best_opponent_eat_token_count(board, color) is not None
 
     total = (
         W_TOKEN * token_adv
@@ -118,8 +118,9 @@ def evaluate(board: Board, color: PlayerColor) -> float:
         + W_HIGH_CORNER * high_corner
         + W_MOBILITY * mobility
         + W_EAT_CLUSTER * eat_cluster
-        + W_EAT_ADJACENCY_DANGER * eat_adjacency_danger
     )
+    if eat_lookahead_danger:
+        total -= EAT_LOOKAHEAD_PENALTY  # one-ply eat lookahead: penalise any position where BLUE can eat RED next turn
 
     opponent_tokens = _total_tokens(board, opponent)
     if opponent_tokens <= 4:
@@ -454,10 +455,22 @@ def _legal_eat_count(board: Board, color: PlayerColor) -> int:
     return count
 
 
-def _eat_adjacency_danger(board: Board, color: PlayerColor) -> int:
-    count = 0
+def _best_opponent_eat_token_count(board: Board, color: PlayerColor) -> int | None:
+    best_token_count = None
 
-    for coord, _ in _get_stacks(board, color):
+    for action in _legal_eat_actions(board, color.opponent):
+        resulting_state = _state_after_eat(board, action)
+        token_count = _token_count_in_state(resulting_state, color)
+        if best_token_count is None or token_count < best_token_count:
+            best_token_count = token_count
+
+    return best_token_count
+
+
+def _legal_eat_actions(board: Board, color: PlayerColor) -> list[EatAction]:
+    actions = []
+
+    for coord, height in _get_stacks(board, color):
         for direction in CARDINAL_DIRECTIONS:
             dest = _next_coord(coord, direction)
             if dest is None:
@@ -467,12 +480,32 @@ def _eat_adjacency_danger(board: Board, color: PlayerColor) -> int:
             if (
                 target is not None
                 and target[0] == color.opponent
-                and target[1] == 1
+                and height >= target[1]
             ):
-                count += 1
-                break
+                actions.append(EatAction(coord, direction))
 
-    return count
+    return actions
+
+
+def _state_after_eat(
+    board: Board, action: EatAction
+) -> dict[Coord, tuple[PlayerColor, int]]:
+    state = {
+        coord: (stack_color, height)
+        for stack_color in (PlayerColor.RED, PlayerColor.BLUE)
+        for coord, height in _get_stacks(board, stack_color)
+    }
+    attacker = state.pop(action.coord, None)
+    dest = _next_coord(action.coord, action.direction)
+    if attacker is not None and dest is not None:
+        state[dest] = attacker
+    return state
+
+
+def _token_count_in_state(
+    state: dict[Coord, tuple[PlayerColor, int]], color: PlayerColor
+) -> int:
+    return sum(height for stack_color, height in state.values() if stack_color == color)
 
 
 def _max_stack_height(board, color: PlayerColor) -> int:
